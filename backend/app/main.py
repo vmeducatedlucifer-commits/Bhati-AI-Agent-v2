@@ -1,4 +1,4 @@
-"""Bhati AI Agent v2 — FastAPI application entrypoint."""
+"""Bhati AI Agent v2 - FastAPI application entrypoint."""
 
 from __future__ import annotations
 
@@ -9,7 +9,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-from app.api.routes import chat, events, files, health, mcp, runs, sessions, terminal, tools, voice
+from app.api.routes import (
+    chat,
+    events,
+    files,
+    health,
+    mcp,
+    models,
+    runs,
+    sessions,
+    swarm,
+    tasks,
+    terminal,
+    tools,
+    voice,
+)
 from app.core.config import settings
 from app.core.errors import BhatiError
 from app.core.logging import get_logger, setup_logging
@@ -23,7 +37,12 @@ log = get_logger("main")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    log.info("startup", env=settings.app_env, providers=settings.configured_providers())
+    log.info(
+        "startup",
+        env=settings.app_env,
+        providers=settings.configured_providers(),
+        swarm_max_agents=settings.swarm_max_agents,
+    )
     settings.workspace_path.mkdir(parents=True, exist_ok=True)
     await init_db()
     register_builtin_tools()
@@ -38,8 +57,11 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Bhati AI Agent v2",
-    version="2.0.0",
-    description="Autonomous multi-agent platform: coding, computer use, research and device control.",
+    version="2.1.0",
+    description=(
+        "Autonomous multi-agent platform: swarm coordination (up to 1200 agents), "
+        "coding, computer use, research and device control."
+    ),
     lifespan=lifespan,
 )
 
@@ -51,7 +73,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for module in (health, chat, runs, sessions, tools, files, terminal, events, voice, mcp):
+for module in (
+    health,
+    chat,
+    runs,
+    sessions,
+    tools,
+    files,
+    terminal,
+    events,
+    voice,
+    mcp,
+    swarm,
+    tasks,
+    models,
+):
     app.include_router(module.router, prefix="/api")
 
 
@@ -62,7 +98,13 @@ async def bhati_error_handler(_request: Request, exc: BhatiError) -> JSONRespons
 
 @app.get("/")
 async def root() -> dict:
-    return {"name": "Bhati AI Agent v2", "docs": "/docs", "health": "/api/health"}
+    return {
+        "name": "Bhati AI Agent v2",
+        "docs": "/docs",
+        "health": "/api/health",
+        "swarm": "/api/swarm/config",
+        "tasks": "/api/tasks",
+    }
 
 
 if __name__ == "__main__":
