@@ -4,10 +4,15 @@ Supported address forms
 -----------------------
 - `anthropic/claude-sonnet-4`   built-in provider
 - `openai/gpt-4o-mini`          built-in provider
+- `builtin/gemini-2.0-flash`    keyless built-in model (General)
+- `builtin/gemini-1.5-pro`      keyless built-in model (Pro)
 - `custom:my-vllm`              user-registered custom model (see app/llm/custom.py)
 - `custom-openai/<model>`       single OpenAI-compatible endpoint from .env
 - `custom-anthropic/<model>`    single Anthropic-compatible gateway from .env
 - `gpt-4o` (bare)               provider guessed from the model name
+
+The `builtin` provider needs no API key and is always registered last in the
+fallback order, so the agent can never end up with "no provider configured".
 """
 
 from __future__ import annotations
@@ -19,8 +24,11 @@ from typing import Any, Literal
 from app.core.config import settings
 from app.core.errors import ConfigurationError, ProviderError
 from app.core.logging import get_logger
+from app.gateway.config import BUILTIN_LABELS, BUILTIN_MODELS
+from app.gateway.config import settings as gateway_settings
 from app.llm.anthropic import AnthropicProvider
 from app.llm.base import LLMProvider, LLMResponse, Message, StreamChunk
+from app.llm.builtin import BuiltinProvider
 from app.llm.custom import CustomModel, get_custom_models
 from app.llm.google import GoogleProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
@@ -36,6 +44,8 @@ OPENAI_COMPATIBLE: dict[str, str] = {
     "mistral": "https://api.mistral.ai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
 }
+
+BUILTIN = "builtin"
 
 
 class ModelRouter:
@@ -77,6 +87,9 @@ class ModelRouter:
                 settings.custom_anthropic_api_key or "",
                 base_url=settings.custom_anthropic_base_url,
             )
+        # Keyless built-in model: always available unless explicitly disabled.
+        if gateway_settings.enabled:
+            self._providers[BUILTIN] = BuiltinProvider()
         log.info("llm_providers_ready", providers=sorted(self._providers))
 
     # ------------------------------------------------------------------ utils
@@ -84,13 +97,32 @@ class ModelRouter:
     def providers(self) -> list[str]:
         return sorted(self._providers)
 
+    @property
+    def builtin_available(self) -> bool:
+        return BUILTIN in self._providers
+
     def available_models(self) -> list[dict[str, Any]]:
         built_in = [{"id": name, "type": "provider", "custom": False} for name in self.providers]
+        keyless = (
+            [
+                {
+                    "id": f"{BUILTIN}/{model_id}",
+                    "model": model_id,
+                    "label": BUILTIN_LABELS.get(model_id, model_id),
+                    "type": "builtin",
+                    "custom": False,
+                    "requires_api_key": False,
+                }
+                for model_id in BUILTIN_MODELS
+            ]
+            if self.builtin_available
+            else []
+        )
         custom = [
             {**model.public(), "type": "custom", "custom": True}
             for model in get_custom_models().list()
         ]
-        return built_in + custom
+        return built_in + keyless + custom
 
     def reload(self) -> None:
         """Re-read providers and custom models without restarting the server."""
@@ -136,11 +168,21 @@ class ModelRouter:
                 raise ConfigurationError(f"Unknown or disabled custom model: {spec}")
             return self._custom_provider(custom), custom.model
 
+        # 2. Keyless built-in model. Explicit `builtin[/model]` always wins;
+        #    bare gemini ids use it only when no Google key is configured.
+        builtin = self._providers.get(BUILTIN)
+        if builtin is not None:
+            if spec == BUILTIN or spec.startswith(f"{BUILTIN}/"):
+                _, _, wanted = spec.partition("/")
+                return builtin, wanted or BUILTIN_MODELS[0]
+            if spec in BUILTIN_MODELS and "google" not in self._providers:
+                return builtin, spec
+
         provider_name, _, model_name = spec.partition("/")
         if not model_name:  # bare model id -> guess by prefix
             provider_name, model_name = self._guess_provider(spec), spec
 
-        # 2. Env-configured single custom endpoints may omit the model name
+        # 3. Env-configured single custom endpoints may omit the model name
         if provider_name == "custom-openai" and not model_name:
             model_name = settings.custom_openai_model or "default"
         if provider_name == "custom-anthropic" and not model_name:
@@ -152,9 +194,12 @@ class ModelRouter:
             if fallback is None:
                 raise ConfigurationError(
                     "No LLM provider configured. Set at least one API key in .env, "
-                    "or register a custom model at POST /api/models/custom"
+                    "register a custom model at POST /api/models/custom, or re-enable "
+                    "the built-in model with BUILTIN_MODEL_ENABLED=1"
                 )
             log.warning("provider_fallback", requested=provider_name, used=fallback[0])
+            if fallback[0] == BUILTIN and model_name not in BUILTIN_MODELS:
+                model_name = BUILTIN_MODELS[0]
             return fallback[1], model_name
         return provider, model_name
 
@@ -188,10 +233,14 @@ class ModelRouter:
         for name in order:
             if name in self._providers:
                 return name, self._providers[name]
-        # last resort: any enabled custom model
+        # any enabled custom model
         for custom in get_custom_models().list():
             if custom.enabled:
                 return f"custom:{custom.alias}", self._custom_provider(custom)
+        # last resort: the keyless built-in model
+        builtin = self._providers.get(BUILTIN)
+        if builtin is not None:
+            return BUILTIN, builtin
         return None
 
     # ----------------------------------------------------------------- calls
