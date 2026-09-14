@@ -17,6 +17,7 @@ from app.llm.base import Message, ToolCall, Usage
 from app.llm.router import get_router
 from app.tools.base import ToolContext, ToolResult
 from app.tools.registry import get_registry
+from app.workspace.manager import get_workspace_manager
 
 log = get_logger("agent.loop")
 
@@ -29,10 +30,18 @@ class AgentRunResult:
     messages: list[Message] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     stopped_reason: str = "completed"
+    workspace: str = ""
+    home: str = ""
 
 
 class AgentLoop:
-    """One autonomous worker. Owns its tool scope, budget and event stream."""
+    """One autonomous worker. Owns its tool scope, workspace, budget and events.
+
+    Workspace model: the tool sandbox is the *session* folder, so swarm agents
+    can read each other's output, while `self.home` (`agents/<agent_id>/`) is
+    this agent's private folder. Deliverables go to `downloads/`, shared notes
+    to `shared/` - all of it browsable and downloadable from the UI.
+    """
 
     def __init__(
         self,
@@ -47,15 +56,22 @@ class AgentLoop:
         self.agent_id = agent_id
         self.profile = profile if isinstance(profile, AgentProfile) else get_profile(profile)
         self.model = model or self.profile.model
-        self.extra_context = extra_context
         self.messages: list[Message] = history or []
         self.usage = Usage()
+
+        workspaces = get_workspace_manager()
+        session_root = workspaces.session_dir(session_id)
+        workspaces.agent_dir(session_id, agent_id)  # ensure the private home exists
+        self.home = workspaces.relative_home(agent_id)
+        briefing = workspaces.briefing(session_id, agent_id)
+        self.extra_context = f"{extra_context}\n\n{briefing}".strip() if extra_context else briefing
+
         self.ctx = ToolContext(
             session_id=session_id,
             agent_id=agent_id,
-            workspace=settings.workspace_path / session_id,
+            workspace=session_root,
+            metadata={"home": self.home},
         )
-        self.ctx.workspace.mkdir(parents=True, exist_ok=True)
         self._cancelled = False
 
     # ----------------------------------------------------------------- tools
@@ -67,7 +83,7 @@ class AgentLoop:
         return build_system_prompt(
             self.profile.role_prompt,
             tool_names=[tool.name for tool in tools],
-            workspace=str(self.ctx.workspace),
+            workspace=f"{self.ctx.workspace} (your folder: {self.home})",
             extra_context=self.extra_context,
         )
 
@@ -84,7 +100,13 @@ class AgentLoop:
         await event_bus.emit(
             EventType.AGENT_START,
             self.session_id,
-            {"profile": self.profile.name, "goal": goal[:400], "tools": len(tools)},
+            {
+                "profile": self.profile.name,
+                "goal": goal[:400],
+                "tools": len(tools),
+                "workspace": str(self.ctx.workspace),
+                "home": self.home,
+            },
             agent_id=self.agent_id,
         )
 
@@ -177,6 +199,7 @@ class AgentLoop:
                 "reason": reason,
                 "tokens": self.usage.total_tokens,
                 "seconds": round(time.perf_counter() - started, 2),
+                "home": self.home,
             },
             agent_id=self.agent_id,
         )
@@ -187,6 +210,8 @@ class AgentLoop:
             messages=self.messages,
             tool_calls=collected,
             stopped_reason=reason,
+            workspace=str(self.ctx.workspace),
+            home=self.home,
         )
 
     async def _execute(self, call: ToolCall) -> ToolResult:
