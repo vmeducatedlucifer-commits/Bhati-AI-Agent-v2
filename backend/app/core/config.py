@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(".env", "backend/.env"), env_file_encoding="utf-8", extra="ignore"
+        env_file=(".env", "backend/.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
     )
 
     # App
@@ -23,10 +27,13 @@ class Settings(BaseSettings):
 
     # NOTE: kept as a plain string on purpose.
     # pydantic-settings JSON-decodes any list[...] field coming from the
-    # environment *before* validators run, so CORS_ORIGINS=* would crash at
-    # startup with "error parsing value for field cors_origins".
-    # Use the `cors_origins` property below to get the parsed list.
-    cors_origins_raw: str = "*"
+    # environment *before* validators run, so CORS_ORIGINS=* crashed startup
+    # with: error parsing value for field "cors_origins".
+    # Read the parsed list through the `cors_origins` property below.
+    cors_origins_raw: str = Field(
+        default="*",
+        validation_alias=AliasChoices("CORS_ORIGINS", "CORS_ORIGINS_RAW", "cors_origins"),
+    )
 
     # Security
     jwt_secret: str = "dev-secret-change-me"
@@ -137,8 +144,6 @@ class Settings(BaseSettings):
         if not raw:
             return ["*"]
         if raw.startswith("["):
-            import json
-
             try:
                 parsed = json.loads(raw)
                 if isinstance(parsed, list):
