@@ -35,5 +35,12 @@ def configure_logging() -> None:
     )
 
 
+# Alias kept because the app entrypoint imports `setup_logging`.
+setup_logging = configure_logging
+
+
 def get_logger(name: str = "bhati") -> structlog.BoundLogger:
     return structlog.get_logger(name)
+
+
+__all__ = ["configure_logging", "setup_logging", "get_logger"]
