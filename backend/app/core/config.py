@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,13 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+
+    # NOTE: kept as a plain string on purpose.
+    # pydantic-settings JSON-decodes any list[...] field coming from the
+    # environment *before* validators run, so CORS_ORIGINS=* would crash at
+    # startup with "error parsing value for field cors_origins".
+    # Use the `cors_origins` property below to get the parsed list.
+    cors_origins_raw: str = "*"
 
     # Security
     jwt_secret: str = "dev-secret-change-me"
@@ -85,13 +91,6 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     tavily_api_key: str | None = None
 
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def _split_origins(cls, value: object) -> object:
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return value
-
     @field_validator("database_url", mode="before")
     @classmethod
     def _normalize_database_url(cls, value: object) -> object:
@@ -99,9 +98,8 @@ class Settings(BaseSettings):
 
         Render/Heroku/Railway hand out `postgres://` or `postgresql://` URLs that
         point at the *sync* psycopg driver. Booting an async engine with those
-        crashes at startup, which is the classic "deploy succeeds, service dies"
-        failure. Normalise them to asyncpg and drop libpq-only query args that
-        asyncpg rejects (e.g. `sslmode`).
+        crashes at startup. Normalise them to asyncpg and drop libpq-only query
+        args (e.g. `sslmode`) that asyncpg rejects.
         """
         if not isinstance(value, str) or not value.strip():
             return value
@@ -131,6 +129,23 @@ class Settings(BaseSettings):
     @classmethod
     def _cap_agents(cls, value: int) -> int:
         return max(1, min(value, 1200))
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Accepts `*`, a comma-separated list, or a JSON array."""
+        raw = (self.cors_origins_raw or "*").strip()
+        if not raw:
+            return ["*"]
+        if raw.startswith("["):
+            import json
+
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            except ValueError:
+                pass
+        return [item.strip() for item in raw.split(",") if item.strip()] or ["*"]
 
     @property
     def is_production(self) -> bool:
