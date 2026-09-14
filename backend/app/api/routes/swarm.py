@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.swarm.blackboard import get_blackboard
 from app.swarm.bus import get_swarm_bus
 from app.swarm.debate import run_debate
+from app.swarm.graph import build_graph
 from app.swarm.registry import get_agent_registry
 from app.swarm.swarm import get_swarm
 from app.swarm.teams import DEFAULT_TEAMS, TeamSpec
@@ -51,9 +52,7 @@ async def swarm_config() -> dict:
 async def launch(request: LaunchRequest) -> dict:
     if not settings.swarm_enabled:
         raise HTTPException(status_code=400, detail="Swarm is disabled")
-    team_specs = (
-        [TeamSpec(**spec) for spec in request.teams] if request.teams else None
-    )
+    team_specs = [TeamSpec(**spec) for spec in request.teams] if request.teams else None
     run = await get_swarm().launch(
         session_id=request.session_id,
         goal=request.goal,
@@ -87,6 +86,24 @@ async def cancel_run(run_id: str) -> dict:
 async def snapshot(session_id: str) -> dict:
     """Everything the swarm dashboard needs in one call."""
     return get_swarm().snapshot(session_id)
+
+
+@router.get("/graph/{session_id}")
+async def graph(
+    session_id: str,
+    window: float = Query(default=0, ge=0, description="Only count messages from the last N seconds"),
+    limit: int = Query(default=4000, le=20000),
+    include_broadcasts: bool = True,
+) -> dict:
+    """Agent-to-agent communication graph: nodes, weighted edges, hubs."""
+    return build_graph(
+        get_swarm_bus(),
+        get_agent_registry(),
+        session_id,
+        window_seconds=window,
+        limit=limit,
+        include_broadcasts=include_broadcasts,
+    )
 
 
 @router.get("/agents/{session_id}")
