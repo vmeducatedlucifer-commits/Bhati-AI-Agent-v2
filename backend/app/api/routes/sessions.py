@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
 
 from app.api.deps import current_user
 from app.api.schemas import SessionCreate
@@ -12,6 +12,11 @@ from app.db.models import ChatMessage, Session
 from app.db.session import get_session
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+# NOTE: `get_session` yields a plain SQLAlchemy AsyncSession, which has
+# `execute()` (not SQLModel's `exec()`), and returns Row objects until
+# `.scalars()` is applied. Using `db.exec(...)` here raised AttributeError
+# at request time.
 
 
 @router.post("")
@@ -31,10 +36,13 @@ async def create_session(
 async def list_sessions(
     limit: int = 50, db: AsyncSession = Depends(get_session), _user: dict = Depends(current_user)
 ) -> list[dict]:
-    result = await db.exec(
-        select(Session).where(Session.archived == False).order_by(Session.updated_at.desc()).limit(limit)  # noqa: E712
+    result = await db.execute(
+        select(Session)
+        .where(Session.archived.is_(False))
+        .order_by(Session.updated_at.desc())
+        .limit(limit)
     )
-    return [row.model_dump() for row in result.all()]
+    return [row.model_dump() for row in result.scalars().all()]
 
 
 @router.get("/{session_id}/messages")
@@ -44,10 +52,13 @@ async def messages(
     db: AsyncSession = Depends(get_session),
     _user: dict = Depends(current_user),
 ) -> list[dict]:
-    result = await db.exec(
-        select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at).limit(limit)
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at)
+        .limit(limit)
     )
-    return [row.model_dump() for row in result.all()]
+    return [row.model_dump() for row in result.scalars().all()]
 
 
 @router.delete("/{session_id}")
