@@ -1,0 +1,64 @@
+# Render blueprint — one-click deploy for API + dashboard + managed Postgres.
+services:
+  - type: web
+    name: bhati-api
+    runtime: docker
+    plan: starter
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SANDBOX_MODE
+        value: local
+      - key: WORKSPACE_DIR
+        value: /app/workspaces
+      - key: AUTH_ENABLED
+        value: "true"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bhati-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        value: "*"
+    disk:
+      name: workspaces
+      mountPath: /app/workspaces
+      sizeGB: 10
+
+  - type: web
+    name: bhati-web
+    runtime: node
+    plan: starter
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    autoDeploy: true
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: bhati-api
+          property: host
+
+databases:
+  - name: bhati-db
+    plan: basic-256mb
+    databaseName: bhati
+    user: bhati

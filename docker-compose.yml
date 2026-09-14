@@ -1,0 +1,56 @@
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bhati-api
+    env_file: [backend/.env]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+asyncpg://bhati:bhati@postgres:5432/bhati
+      REDIS_URL: redis://redis:6379/0
+      SANDBOX_MODE: docker
+      WORKSPACE_DIR: /app/workspaces
+    ports: ["8000:8000"]
+    volumes:
+      - ./workspaces:/app/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: bhati-web
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports: ["3000:3000"]
+    depends_on: [api]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: bhati-postgres
+    environment:
+      POSTGRES_USER: bhati
+      POSTGRES_PASSWORD: bhati
+      POSTGRES_DB: bhati
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bhati"]
+      interval: 10s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: bhati-redis
+    volumes: ["redisdata:/data"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
