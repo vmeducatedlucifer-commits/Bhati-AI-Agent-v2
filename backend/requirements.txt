@@ -28,3 +28,5 @@ docker>=7.1.0
 mcp>=1.2.0
 redis>=5.2.0
 selectolax>=0.3.27
+# built-in keyless model (Gemini web tunnel) - optional import, better TLS fingerprinting
+curl_cffi>=0.7.3
