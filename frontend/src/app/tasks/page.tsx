@@ -10,14 +10,17 @@ import {
   startTask,
   type BoardTask,
 } from "@/lib/swarm"
+import { workspace } from "@/lib/client"
+import { Button, Empty, Panel } from "@/components/ui/Primitives"
+import { cx } from "@/lib/format"
 import { useStore } from "@/lib/store"
 
 const COLUMNS = [
-  { key: "queued", label: "Queued" },
-  { key: "running", label: "Running" },
-  { key: "review", label: "Review" },
-  { key: "done", label: "Done" },
-  { key: "failed", label: "Failed / Cancelled" },
+  { key: "queued", label: "Queued", tone: "bg-white/25" },
+  { key: "running", label: "Running", tone: "bg-[rgb(var(--brand-2))]" },
+  { key: "review", label: "Review", tone: "bg-[rgb(var(--warn))]" },
+  { key: "done", label: "Done", tone: "bg-[rgb(var(--ok))]" },
+  { key: "failed", label: "Failed / Cancelled", tone: "bg-[rgb(var(--err))]" },
 ]
 
 function column(task: BoardTask) {
@@ -68,41 +71,32 @@ export default function TaskPanel() {
   }
 
   return (
-    <main className="flex h-screen flex-col gap-3 bg-zinc-950 p-4 text-zinc-100">
-      <header className="flex items-center gap-3">
-        <h1 className="text-lg font-semibold">Task Panel</h1>
-        <span className="text-xs text-zinc-500">
-          Assign work here — the swarm must complete it.
-        </span>
-        <button
-          onClick={() => startAll(sessionId).then(refresh)}
-          className="ml-auto rounded-lg border border-zinc-700 px-3 py-1.5 text-sm hover:border-zinc-500"
-        >
-          Start all queued
-        </button>
-      </header>
-
-      {/* Composer */}
-      <section className="grid gap-2 rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 md:grid-cols-[2fr_1fr]">
+    <div className="mx-auto flex h-full max-w-[1700px] flex-col gap-4 p-4 lg:p-6">
+      <Panel
+        title="Task panel"
+        subtitle="Assign work here — the swarm has to finish it and leave the files in the workspace"
+        bodyClassName="grid gap-3 p-4 md:grid-cols-[2fr_1fr]"
+        actions={<Button onClick={() => startAll(sessionId).then(refresh)}>Start all queued</Button>}
+      >
         <div className="space-y-2">
           <input
             value={form.title}
             onChange={(event) => setForm({ ...form, title: event.target.value })}
             placeholder="Task title — what must be done"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-zinc-600"
+            className="input"
           />
           <textarea
             value={form.description}
             onChange={(event) => setForm({ ...form, description: event.target.value })}
             placeholder="Details, constraints, links, repo paths…"
             rows={3}
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-zinc-600"
+            className="input resize-none"
           />
           <input
             value={form.acceptance}
             onChange={(event) => setForm({ ...form, acceptance: event.target.value })}
             placeholder="Acceptance criteria — how we know it's truly done"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-zinc-600"
+            className="input"
           />
         </div>
         <div className="space-y-2 text-sm">
@@ -110,7 +104,7 @@ export default function TaskPanel() {
             <select
               value={form.mode}
               onChange={(event) => setForm({ ...form, mode: event.target.value })}
-              className="flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2"
+              className="input flex-1"
             >
               <option value="swarm">Swarm</option>
               <option value="single">Single agent</option>
@@ -121,13 +115,14 @@ export default function TaskPanel() {
               max={1200}
               value={form.size}
               onChange={(event) => setForm({ ...form, size: Number(event.target.value) })}
-              className="w-24 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2"
+              className="input w-24"
+              title="Swarm size"
             />
           </div>
           <select
             value={form.assignee}
             onChange={(event) => setForm({ ...form, assignee: event.target.value })}
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2"
+            className="input"
           >
             {["auto", "coder", "researcher", "operator", "reviewer", "planner", "general"].map((role) => (
               <option key={role} value={role}>
@@ -142,107 +137,109 @@ export default function TaskPanel() {
               max={10}
               value={form.priority}
               onChange={(event) => setForm({ ...form, priority: Number(event.target.value) })}
-              className="w-20 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2"
+              className="input w-20"
               title="Priority (1 = highest)"
             />
             <input
               value={form.model}
               onChange={(event) => setForm({ ...form, model: event.target.value })}
               placeholder="model override"
-              className="flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2"
+              className="input flex-1"
             />
           </div>
-          <button
-            onClick={submit}
-            className="w-full rounded-lg bg-emerald-600 px-3 py-2 font-medium hover:bg-emerald-500"
-          >
+          <Button variant="primary" className="w-full" onClick={submit}>
             Assign to swarm
-          </button>
+          </Button>
         </div>
-      </section>
+      </Panel>
 
-      {/* Board */}
-      <section className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-5">
-        {COLUMNS.map((col) => (
-          <div
-            key={col.key}
-            className="flex min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-900/40 p-2"
-          >
-            <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-zinc-400">
-              {col.label} ({tasks.filter((task) => column(task) === col.key).length})
-            </h2>
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
-              {tasks
-                .filter((task) => column(task) === col.key)
-                .map((task) => (
-                  <div
+      <section className="grid min-h-0 flex-1 grid-cols-1 gap-4 md:grid-cols-3 xl:grid-cols-5">
+        {COLUMNS.map((col) => {
+          const items = tasks.filter((task) => column(task) === col.key)
+          return (
+            <div key={col.key} className="glass flex min-h-0 flex-col p-2">
+              <h2 className="flex items-center gap-2 px-2 py-2 text-[11px] font-semibold uppercase tracking-wider text-[rgb(var(--muted))]">
+                <span className={cx("h-1.5 w-1.5 rounded-full", col.tone)} />
+                {col.label}
+                <span className="ml-auto rounded-md border px-1.5 text-[10px]">{items.length}</span>
+              </h2>
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto scroll-thin p-1">
+                {!items.length && <Empty icon="—" text="Empty" />}
+                {items.map((task) => (
+                  <button
                     key={task.id}
                     onClick={() => setOpen(task)}
-                    className="cursor-pointer rounded-lg border border-zinc-800 bg-zinc-950/60 p-2 hover:border-zinc-600"
+                    className="float-in w-full rounded-xl border bg-black/30 p-2.5 text-left transition hover:border-[rgb(var(--brand))]/50"
                   >
                     <div className="flex items-start gap-2">
-                      <span className="rounded bg-zinc-800 px-1.5 text-[10px]">P{task.priority}</span>
-                      <span className="flex-1 text-sm">{task.title}</span>
+                      <span className="chip border text-[10px] text-[rgb(var(--muted))]">P{task.priority}</span>
+                      <span className="flex-1 text-sm leading-snug">{task.title}</span>
                     </div>
-                    <div className="mt-1 flex items-center gap-2 text-[10px] text-zinc-500">
+                    <div className="mt-1.5 flex items-center gap-2 text-[10px] text-[rgb(var(--muted))]">
                       <span>{task.mode === "swarm" ? `${task.size ?? "auto"} agents` : task.assignee}</span>
                       {task.agent_ids.length > 0 && <span>· {task.agent_ids.length} live</span>}
                     </div>
                     {task.status === "running" && (
-                      <div className="mt-2 h-1 w-full rounded bg-zinc-800">
+                      <div className="mt-2 h-1 w-full overflow-hidden rounded bg-white/10">
                         <div
-                          className="h-1 rounded bg-emerald-500 transition-all"
+                          className="h-1 rounded bg-gradient-to-r from-[rgb(var(--brand))] to-[rgb(var(--brand-2))] transition-all"
                           style={{ width: `${task.progress}%` }}
                         />
                       </div>
                     )}
-                  </div>
+                  </button>
                 ))}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </section>
 
-      {/* Detail drawer */}
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/60"
-          onClick={() => setOpen(null)}
-        >
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm" onClick={() => setOpen(null)}>
           <div
-            className="h-full w-full max-w-xl overflow-y-auto border-l border-zinc-800 bg-zinc-950 p-4"
+            className="float-in h-full w-full max-w-xl overflow-y-auto scroll-thin border-l bg-[rgb(var(--bg-soft))] p-5"
             onClick={(event) => event.stopPropagation()}
           >
             <h2 className="text-lg font-semibold">{open.title}</h2>
-            <p className="mt-1 text-xs text-zinc-500">
+            <p className="mt-1 text-xs text-[rgb(var(--muted))]">
               {open.status} · {open.progress}% · {open.mode} · {open.model ?? "default model"}
             </p>
+
             {open.description && (
-              <p className="mt-3 whitespace-pre-wrap text-sm text-zinc-300">{open.description}</p>
+              <p className="mt-4 whitespace-pre-wrap text-sm text-[rgb(var(--text))]/85">{open.description}</p>
             )}
             {open.acceptance && (
-              <p className="mt-3 rounded-lg border border-zinc-800 p-2 text-sm text-amber-200">
+              <p className="mt-4 rounded-xl border p-3 text-sm text-[rgb(var(--warn))]">
                 Acceptance: {open.acceptance}
               </p>
             )}
+
             {open.agent_ids.length > 0 && (
-              <div className="mt-3">
-                <h3 className="text-xs uppercase text-zinc-500">Working agents</h3>
-                <div className="mt-1 flex flex-wrap gap-1">
+              <div className="mt-4">
+                <h3 className="text-[11px] uppercase tracking-wider text-[rgb(var(--muted))]">Working agents</h3>
+                <div className="mt-2 flex flex-wrap gap-1.5">
                   {open.agent_ids.map((id) => (
-                    <span key={id} className="rounded bg-zinc-800 px-2 py-0.5 text-xs">
-                      {id}
-                    </span>
+                    <a
+                      key={id}
+                      href={workspace.archiveUrl(sessionId, `agents/${id}`)}
+                      download
+                      title="Download this agent's files"
+                      className="chip border hover:border-[rgb(var(--brand))]/60"
+                    >
+                      🤖 {id} ↓
+                    </a>
                   ))}
                 </div>
               </div>
             )}
-            <div className="mt-3">
-              <h3 className="text-xs uppercase text-zinc-500">Activity</h3>
-              <div className="mt-1 space-y-1">
+
+            <div className="mt-4">
+              <h3 className="text-[11px] uppercase tracking-wider text-[rgb(var(--muted))]">Activity</h3>
+              <div className="mt-2 space-y-1">
                 {open.log.map((entry, index) => (
-                  <div key={index} className="text-xs text-zinc-400">
-                    <span className="text-zinc-600">
+                  <div key={index} className="text-xs text-[rgb(var(--text))]/75">
+                    <span className="text-[rgb(var(--muted))]">
                       {new Date(entry.at * 1000).toLocaleTimeString()} · {entry.author}
                     </span>{" "}
                     {entry.message}
@@ -250,34 +247,34 @@ export default function TaskPanel() {
                 ))}
               </div>
             </div>
+
             {open.result && (
-              <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-xs text-zinc-200">
-                {open.result}
-              </pre>
+              <pre className="mt-4 whitespace-pre-wrap rounded-xl border bg-black/40 p-3 text-xs">{open.result}</pre>
             )}
-            <div className="mt-4 flex gap-2">
-              <button
-                onClick={() => startTask(open.id).then(refresh)}
-                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm hover:bg-emerald-500"
-              >
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Button variant="primary" onClick={() => startTask(open.id).then(refresh)}>
                 Start
-              </button>
-              <button
-                onClick={() => cancelTask(open.id).then(refresh)}
-                className="rounded-lg bg-amber-700 px-3 py-1.5 text-sm hover:bg-amber-600"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => deleteTask(open.id).then(() => { setOpen(null); refresh() })}
-                className="rounded-lg bg-red-800 px-3 py-1.5 text-sm hover:bg-red-700"
+              </Button>
+              <Button onClick={() => cancelTask(open.id).then(refresh)}>Cancel</Button>
+              <a href={workspace.archiveUrl(sessionId)} download className="btn btn-ghost">
+                Download workspace
+              </a>
+              <Button
+                variant="danger"
+                onClick={() =>
+                  deleteTask(open.id).then(() => {
+                    setOpen(null)
+                    refresh()
+                  })
+                }
               >
                 Delete
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       )}
-    </main>
+    </div>
   )
 }
