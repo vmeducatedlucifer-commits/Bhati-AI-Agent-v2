@@ -1,4 +1,8 @@
-"""Anthropic Messages API provider with streaming + tool use."""
+"""Anthropic Messages API provider with streaming + tool use.
+
+Also works with any Anthropic-compatible gateway (Bedrock proxies, LiteLLM,
+self-hosted relays) by passing `base_url` and optional `extra_headers`.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +17,18 @@ from app.llm.base import LLMProvider, Message, StreamChunk, ToolCall, Usage
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
+
+
+def _messages_url(base_url: str | None) -> str:
+    """Build the /messages endpoint for an Anthropic-compatible base URL."""
+    if not base_url:
+        return API_URL
+    trimmed = base_url.rstrip("/")
+    if trimmed.endswith("/messages"):
+        return trimmed
+    if trimmed.endswith("/v1"):
+        return f"{trimmed}/messages"
+    return f"{trimmed}/v1/messages"
 
 
 def _to_wire(messages: Sequence[Message]) -> tuple[str | None, list[dict[str, Any]]]:
@@ -51,9 +67,34 @@ def _to_wire(messages: Sequence[Message]) -> tuple[str | None, list[dict[str, An
 class AnthropicProvider(LLMProvider):
     name = "anthropic"
 
-    def __init__(self, api_key: str, timeout: float = 300.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 300.0,
+        base_url: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        name: str | None = None,
+    ) -> None:
         self.api_key = api_key
         self.timeout = timeout
+        self.base_url = base_url
+        self.api_url = _messages_url(base_url)
+        self.extra_headers = extra_headers or {}
+        if name:
+            self.name = name
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "anthropic-version": API_VERSION,
+            "content-type": "application/json",
+            **self.extra_headers,
+        }
+        if self.api_key:
+            headers.setdefault("x-api-key", self.api_key)
+            # Some compatible gateways expect a bearer token instead.
+            if self.base_url:
+                headers.setdefault("authorization", f"Bearer {self.api_key}")
+        return headers
 
     async def stream(
         self,
@@ -85,20 +126,16 @@ class AnthropicProvider(LLMProvider):
                 for tool in tools
             ]
 
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": API_VERSION,
-            "content-type": "application/json",
-        }
+        headers = self._headers()
         blocks: dict[int, dict[str, Any]] = {}
         usage = Usage()
         calls: list[ToolCall] = []
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream("POST", API_URL, headers=headers, json=payload) as response:
+            async with client.stream("POST", self.api_url, headers=headers, json=payload) as response:
                 if response.status_code >= 400:
                     body = (await response.aread()).decode(errors="replace")
-                    raise ProviderError(f"anthropic error {response.status_code}: {body[:500]}")
+                    raise ProviderError(f"{self.name} error {response.status_code}: {body[:500]}")
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
