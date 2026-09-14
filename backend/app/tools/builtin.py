@@ -11,6 +11,7 @@ from app.tools.memory_tools import MEMORY_TOOLS
 from app.tools.python_exec import PYTHON_TOOLS
 from app.tools.registry import get_registry
 from app.tools.shell import SHELL_TOOLS
+from app.tools.swarm_tools import SWARM_TOOLS
 from app.tools.web import WEB_TOOLS
 
 log = get_logger("tools.builtin")
@@ -28,6 +29,7 @@ def register_builtin_tools() -> None:
             *BROWSER_TOOLS,
             *DEVICE_TOOLS,
             *MEMORY_TOOLS,
+            *SWARM_TOOLS,
         ]
     )
     log.info("builtin_tools_registered", count=len(registry.all()))
