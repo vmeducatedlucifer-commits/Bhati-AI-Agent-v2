@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite3
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+.turbo/
+npm-debug.log*
+
+# Workspaces / runtime data
+data/
+workspaces/
+logs/
+*.log
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
