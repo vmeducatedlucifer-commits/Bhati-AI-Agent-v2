@@ -1,4 +1,14 @@
-"""Model router: `provider/model` resolution, capability presets, fallbacks."""
+"""Model router: `provider/model` resolution, capability presets, fallbacks.
+
+Supported address forms
+-----------------------
+- `anthropic/claude-sonnet-4`   built-in provider
+- `openai/gpt-4o-mini`          built-in provider
+- `custom:my-vllm`              user-registered custom model (see app/llm/custom.py)
+- `custom-openai/<model>`       single OpenAI-compatible endpoint from .env
+- `custom-anthropic/<model>`    single Anthropic-compatible gateway from .env
+- `gpt-4o` (bare)               provider guessed from the model name
+"""
 
 from __future__ import annotations
 
@@ -11,6 +21,7 @@ from app.core.errors import ConfigurationError, ProviderError
 from app.core.logging import get_logger
 from app.llm.anthropic import AnthropicProvider
 from app.llm.base import LLMProvider, LLMResponse, Message, StreamChunk
+from app.llm.custom import CustomModel, get_custom_models
 from app.llm.google import GoogleProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
 
@@ -32,6 +43,7 @@ class ModelRouter:
 
     def __init__(self) -> None:
         self._providers: dict[str, LLMProvider] = {}
+        self._custom_cache: dict[str, LLMProvider] = {}
         self._build()
 
     def _build(self) -> None:
@@ -53,12 +65,39 @@ class ModelRouter:
             self._providers["ollama"] = OpenAICompatibleProvider(
                 "ollama", api_key=None, base_url=settings.ollama_base_url
             )
+        # Single custom endpoints straight from .env
+        if settings.custom_openai_base_url:
+            self._providers["custom-openai"] = OpenAICompatibleProvider(
+                "custom-openai",
+                api_key=settings.custom_openai_api_key,
+                base_url=settings.custom_openai_base_url,
+            )
+        if settings.custom_anthropic_base_url:
+            self._providers["custom-anthropic"] = AnthropicProvider(
+                settings.custom_anthropic_api_key or "",
+                base_url=settings.custom_anthropic_base_url,
+            )
         log.info("llm_providers_ready", providers=sorted(self._providers))
 
     # ------------------------------------------------------------------ utils
     @property
     def providers(self) -> list[str]:
         return sorted(self._providers)
+
+    def available_models(self) -> list[dict[str, Any]]:
+        built_in = [{"id": name, "type": "provider", "custom": False} for name in self.providers]
+        custom = [
+            {**model.public(), "type": "custom", "custom": True}
+            for model in get_custom_models().list()
+        ]
+        return built_in + custom
+
+    def reload(self) -> None:
+        """Re-read providers and custom models without restarting the server."""
+        self._providers.clear()
+        self._custom_cache.clear()
+        get_custom_models().load()
+        self._build()
 
     def model_for(self, task: TaskClass = "default") -> str:
         return {
@@ -68,17 +107,52 @@ class ModelRouter:
             "embedding": settings.embedding_model,
         }[task]
 
+    # ------------------------------------------------------------- custom
+    def _custom_provider(self, model: CustomModel) -> LLMProvider:
+        cached = self._custom_cache.get(model.alias)
+        if cached is not None:
+            return cached
+        if model.format == "anthropic":
+            provider: LLMProvider = AnthropicProvider(
+                model.api_key, base_url=model.base_url, extra_headers=model.headers or None
+            )
+        else:
+            provider = OpenAICompatibleProvider(
+                f"custom:{model.alias}",
+                api_key=model.api_key or None,
+                base_url=model.base_url,
+                extra_headers=model.headers or None,
+            )
+        self._custom_cache[model.alias] = provider
+        return provider
+
     def resolve(self, model: str | None = None, task: TaskClass = "default") -> tuple[LLMProvider, str]:
         spec = model or self.model_for(task)
+
+        # 1. User-registered custom model: custom:<alias>
+        if spec.startswith("custom:"):
+            custom = get_custom_models().resolve(spec)
+            if custom is None:
+                raise ConfigurationError(f"Unknown or disabled custom model: {spec}")
+            return self._custom_provider(custom), custom.model
+
         provider_name, _, model_name = spec.partition("/")
         if not model_name:  # bare model id -> guess by prefix
             provider_name, model_name = self._guess_provider(spec), spec
+
+        # 2. Env-configured single custom endpoints may omit the model name
+        if provider_name == "custom-openai" and not model_name:
+            model_name = settings.custom_openai_model or "default"
+        if provider_name == "custom-anthropic" and not model_name:
+            model_name = settings.custom_anthropic_model or "default"
+
         provider = self._providers.get(provider_name)
         if provider is None:
             fallback = self._first_available()
             if fallback is None:
                 raise ConfigurationError(
-                    "No LLM provider configured. Set at least one API key in .env"
+                    "No LLM provider configured. Set at least one API key in .env, "
+                    "or register a custom model at POST /api/models/custom"
                 )
             log.warning("provider_fallback", requested=provider_name, used=fallback[0])
             return fallback[1], model_name
@@ -99,9 +173,25 @@ class ModelRouter:
         return "openrouter"
 
     def _first_available(self) -> tuple[str, LLMProvider] | None:
-        for name in ("anthropic", "openai", "google", "deepseek", "groq", "mistral", "openrouter", "ollama"):
+        order = (
+            "anthropic",
+            "openai",
+            "google",
+            "deepseek",
+            "groq",
+            "mistral",
+            "openrouter",
+            "custom-openai",
+            "custom-anthropic",
+            "ollama",
+        )
+        for name in order:
             if name in self._providers:
                 return name, self._providers[name]
+        # last resort: any enabled custom model
+        for custom in get_custom_models().list():
+            if custom.enabled:
+                return f"custom:{custom.alias}", self._custom_provider(custom)
         return None
 
     # ----------------------------------------------------------------- calls

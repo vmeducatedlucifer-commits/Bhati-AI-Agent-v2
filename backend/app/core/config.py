@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/bhati.db"
     redis_url: str | None = None
     workspace_dir: str = "./workspaces"
+    ephemeral_workspace: bool = False
 
     # Providers
     openai_api_key: str | None = None
@@ -43,6 +44,17 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434/v1"
 
+    # Custom / self-hosted models (added at runtime via /api/models/custom)
+    custom_models_file: str = "./data/custom_models.json"
+    # Optional single custom endpoint straight from env (OpenAI-compatible)
+    custom_openai_base_url: str | None = None
+    custom_openai_api_key: str | None = None
+    custom_openai_model: str | None = None
+    # Optional single custom Anthropic-compatible gateway from env
+    custom_anthropic_base_url: str | None = None
+    custom_anthropic_api_key: str | None = None
+    custom_anthropic_model: str | None = None
+
     # Models
     default_model: str = "anthropic/claude-sonnet-4"
     fast_model: str = "openai/gpt-4o-mini"
@@ -53,6 +65,15 @@ class Settings(BaseSettings):
     max_steps: int = 40
     max_parallel_agents: int = 4
     step_timeout_seconds: int = 180
+
+    # Swarm
+    swarm_enabled: bool = True
+    swarm_max_agents: int = 1200          # hard ceiling for one swarm run
+    swarm_default_agents: int = 12        # used when the caller does not pass a size
+    swarm_llm_concurrency: int = 24       # in-flight model calls (the real bottleneck)
+    swarm_message_history: int = 20_000   # A2A messages kept per session for the dashboard
+    swarm_agent_max_steps: int = 15       # per-worker step cap inside a swarm
+    swarm_debate_rounds: int = 1
 
     # Sandbox
     sandbox_mode: str = "local"
@@ -70,6 +91,11 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("swarm_max_agents")
+    @classmethod
+    def _cap_agents(cls, value: int) -> int:
+        return max(1, min(value, 1200))
 
     @property
     def is_production(self) -> bool:
@@ -93,6 +119,10 @@ class Settings(BaseSettings):
         }
         providers = [name for name, key in mapping.items() if key]
         providers.append("ollama")
+        if self.custom_openai_base_url:
+            providers.append("custom-openai")
+        if self.custom_anthropic_base_url:
+            providers.append("custom-anthropic")
         return providers
 
 
