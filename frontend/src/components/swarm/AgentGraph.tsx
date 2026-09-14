@@ -5,12 +5,11 @@
  *
  * Canvas-rendered force-directed layout (no extra deps) where every edge is a
  * real conversation between two agents. Animated particles travel along each
- * edge in the direction the message flowed, so you literally watch who is
- * talking to whom. Live SSE messages fire an instant pulse; the weighted graph
- * from the backend keeps the layout stable.
+ * edge in the direction the message flowed. Live SSE messages fire an instant
+ * pulse; the weighted graph from the backend keeps the layout stable.
  *
- * Scale strategy: above `CLUSTER_LIMIT` nodes we collapse agents into team hub
- * nodes, so 1200 agents stay readable at 60fps.
+ * Every payload is normalized before it touches the render loop — a backend
+ * error response must never crash the dashboard.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -45,16 +44,85 @@ export type GraphEdge = {
   broadcast: boolean
 }
 
+export type GraphStats = {
+  node_count: number
+  edge_count: number
+  message_count: number
+  density: number
+  hubs: { id: string; degree: number }[]
+  isolated: string[]
+}
+
 export type GraphPayload = {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  stats: GraphStats
+}
+
+const EMPTY_GRAPH: GraphPayload = {
+  nodes: [],
+  edges: [],
   stats: {
-    node_count: number
-    edge_count: number
-    message_count: number
-    density: number
-    hubs: { id: string; degree: number }[]
-    isolated: string[]
+    node_count: 0,
+    edge_count: 0,
+    message_count: 0,
+    density: 0,
+    hubs: [],
+    isolated: [],
+  },
+}
+
+/** Coerce anything the API returns into a render-safe graph. */
+function normalizeGraph(raw: unknown): GraphPayload {
+  if (!raw || typeof raw !== "object") return EMPTY_GRAPH
+  const data = raw as Record<string, unknown>
+  const stats = (data.stats ?? {}) as Record<string, unknown>
+
+  const nodes = (Array.isArray(data.nodes) ? (data.nodes as GraphNode[]) : [])
+    .filter((node) => node && typeof node.id === "string")
+    .map((node) => ({
+      ...node,
+      label: node.label ?? node.id,
+      type: (node.type ?? "agent") as GraphNode["type"],
+      team: node.team ?? "core",
+      role: node.role ?? "agent",
+      status: node.status ?? "idle",
+      sent: Number(node.sent ?? 0),
+      received: Number(node.received ?? 0),
+      degree: Number(node.degree ?? 0),
+    }))
+
+  const ids = new Set(nodes.map((node) => node.id))
+  const edges = (Array.isArray(data.edges) ? (data.edges as GraphEdge[]) : [])
+    .filter(
+      (edge) =>
+        edge &&
+        typeof edge.source === "string" &&
+        typeof edge.target === "string" &&
+        ids.has(edge.source) &&
+        ids.has(edge.target),
+    )
+    .map((edge) => ({
+      ...edge,
+      id: edge.id ?? `${edge.source}->${edge.target}`,
+      count: Number(edge.count ?? 1),
+      kinds: edge.kinds ?? {},
+      last_kind: edge.last_kind ?? "chat",
+      last_message: edge.last_message ?? "",
+      broadcast: Boolean(edge.broadcast),
+    }))
+
+  return {
+    nodes,
+    edges,
+    stats: {
+      node_count: Number(stats.node_count ?? nodes.length),
+      edge_count: Number(stats.edge_count ?? edges.length),
+      message_count: Number(stats.message_count ?? 0),
+      density: Number(stats.density ?? 0),
+      hubs: Array.isArray(stats.hubs) ? (stats.hubs as GraphStats["hubs"]) : [],
+      isolated: Array.isArray(stats.isolated) ? (stats.isolated as string[]) : [],
+    },
   }
 }
 
@@ -172,12 +240,18 @@ export function AgentGraph({
   const graphRef = useRef<GraphPayload | null>(null)
   const seenRef = useRef<Set<string>>(new Set())
 
-  const [graph, setGraph] = useState<GraphPayload | null>(null)
+  const [graph, setGraph] = useState<GraphPayload>(EMPTY_GRAPH)
   const [hover, setHover] = useState<GraphNode | null>(null)
   const [windowSeconds, setWindowSeconds] = useState(0)
   const [showBroadcasts, setShowBroadcasts] = useState(true)
 
-  const view = useMemo(() => (graph ? clusterGraph(graph) : null), [graph])
+  const view = useMemo(() => {
+    try {
+      return clusterGraph(graph)
+    } catch {
+      return EMPTY_GRAPH
+    }
+  }, [graph])
 
   // ---- data ---------------------------------------------------------------
   useEffect(() => {
@@ -187,7 +261,8 @@ export function AgentGraph({
         const response = await fetch(
           `${API}/api/swarm/graph/${sessionId}?window=${windowSeconds}&include_broadcasts=${showBroadcasts}`,
         )
-        const payload = (await response.json()) as GraphPayload
+        if (!response.ok) return
+        const payload = normalizeGraph(await response.json())
         if (!cancelled) setGraph(payload)
       } catch {
         /* dashboard keeps last known graph */
@@ -208,12 +283,11 @@ export function AgentGraph({
   // ---- live pulses --------------------------------------------------------
   useEffect(() => {
     const bodies = bodiesRef.current
-    for (const message of live.slice(-40)) {
-      if (seenRef.current.has(message.id)) continue
+    for (const message of (live ?? []).slice(-40)) {
+      if (!message || seenRef.current.has(message.id)) continue
       seenRef.current.add(message.id)
       const from = bodies.get(message.sender)
-      const target =
-        message.recipient === "*" ? `topic:${message.topic}` : message.recipient
+      const target = message.recipient === "*" ? `topic:${message.topic}` : message.recipient
       const to = bodies.get(target)
       if (from) from.pulse = 1
       if (to) to.pulse = 1
@@ -243,8 +317,8 @@ export function AgentGraph({
     function resize() {
       const ratio = window.devicePixelRatio || 1
       const rect = canvas!.getBoundingClientRect()
-      canvas!.width = rect.width * ratio
-      canvas!.height = rect.height * ratio
+      canvas!.width = Math.max(1, rect.width * ratio)
+      canvas!.height = Math.max(1, rect.height * ratio)
       context!.setTransform(ratio, 0, 0, ratio, 0, 0)
     }
     resize()
@@ -269,10 +343,15 @@ export function AgentGraph({
                   : 4 + Math.min(6, Math.log2(1 + node.degree))
           return
         }
-        // seed on a ring: queen center, leads inner, workers outer
         const angle = (index / Math.max(1, payload.nodes.length)) * Math.PI * 2
         const ring =
-          node.type === "queen" ? 0 : node.type === "lead" ? 0.28 : node.type === "topic" ? 0.18 : 0.42
+          node.type === "queen"
+            ? 0
+            : node.type === "lead"
+              ? 0.28
+              : node.type === "topic"
+                ? 0.18
+                : 0.42
         bodies.set(node.id, {
           id: node.id,
           node,
@@ -288,15 +367,15 @@ export function AgentGraph({
 
     function simulate(payload: GraphPayload, width: number, height: number) {
       const bodies = [...bodiesRef.current.values()]
+      if (!bodies.length) return
       const centerX = width / 2
       const centerY = height / 2
 
-      // repulsion (sampled for large graphs to stay at 60fps)
       const sample = bodies.length > 160 ? 40 : bodies.length
       for (const body of bodies) {
         for (let index = 0; index < sample; index += 1) {
           const other = bodies[Math.floor(Math.random() * bodies.length)]
-          if (other === body) continue
+          if (!other || other === body) continue
           const dx = body.x - other.x
           const dy = body.y - other.y
           const distanceSq = dx * dx + dy * dy || 0.01
@@ -305,12 +384,10 @@ export function AgentGraph({
           body.vx += dx * force
           body.vy += dy * force
         }
-        // gravity toward the centre keeps the cloud on screen
         body.vx += (centerX - body.x) * 0.0016
         body.vy += (centerY - body.y) * 0.0016
       }
 
-      // springs along real conversations
       for (const edge of payload.edges) {
         const source = bodiesRef.current.get(edge.source)
         const target = bodiesRef.current.get(edge.target)
@@ -345,14 +422,18 @@ export function AgentGraph({
       const height = rect.height
 
       context!.clearRect(0, 0, width, height)
-      if (!payload) return
+      if (!payload || !payload.nodes.length) return
 
-      syncBodies(payload, width, height)
-      if (tick % 2 === 0) simulate(payload, width, height)
+      try {
+        syncBodies(payload, width, height)
+        if (tick % 2 === 0) simulate(payload, width, height)
+      } catch {
+        return
+      }
 
       const bodies = bodiesRef.current
       const focus = selected ?? hoverRef.current?.id ?? null
-      const maxCount = Math.max(1, ...payload.edges.map((edge) => edge.count))
+      const maxCount = Math.max(1, ...payload.edges.map((edge) => edge.count), 1)
 
       // edges
       for (const edge of payload.edges) {
@@ -365,22 +446,24 @@ export function AgentGraph({
         context!.lineWidth = Math.min(4, 0.6 + Math.log2(1 + edge.count))
         context!.beginPath()
         context!.moveTo(source.x, source.y)
-        // slight curve so A→B and B→A are both visible
         const midX = (source.x + target.x) / 2 + (target.y - source.y) * 0.08
         const midY = (source.y + target.y) / 2 - (target.x - source.x) * 0.08
         context!.quadraticCurveTo(midX, midY, target.x, target.y)
         context!.stroke()
 
-        // steady traffic flow: ambient particles proportional to volume
         if (!dimmed) {
           const density = Math.min(3, Math.ceil(edge.count / 4))
           for (let index = 0; index < density; index += 1) {
-            const progress = ((tick * 0.006 + index / density + edge.count * 0.01) % 1)
+            const progress = (tick * 0.006 + index / density + edge.count * 0.01) % 1
             const inverse = 1 - progress
             const x =
-              inverse * inverse * source.x + 2 * inverse * progress * midX + progress * progress * target.x
+              inverse * inverse * source.x +
+              2 * inverse * progress * midX +
+              progress * progress * target.x
             const y =
-              inverse * inverse * source.y + 2 * inverse * progress * midY + progress * progress * target.y
+              inverse * inverse * source.y +
+              2 * inverse * progress * midY +
+              progress * progress * target.y
             context!.globalAlpha = 0.8
             context!.fillStyle = KIND_COLOR[edge.last_kind] ?? "#94a3b8"
             context!.beginPath()
@@ -390,7 +473,7 @@ export function AgentGraph({
         }
       }
 
-      // live message pulses (bright, fast)
+      // live message pulses
       particlesRef.current = particlesRef.current.filter((particle) => particle.progress < 1)
       for (const particle of particlesRef.current) {
         const source = bodies.get(particle.from)
@@ -414,9 +497,7 @@ export function AgentGraph({
       for (const body of bodies.values()) {
         const dimmed = focus !== null && body.id !== focus
         const color =
-          body.node.type === "topic"
-            ? "#6366f1"
-            : (STATUS_COLOR[body.node.status] ?? "#475569")
+          body.node.type === "topic" ? "#6366f1" : (STATUS_COLOR[body.node.status] ?? "#475569")
         context!.globalAlpha = dimmed ? 0.25 : 1
 
         if (body.pulse > 0.05) {
@@ -470,13 +551,13 @@ export function AgentGraph({
     return best
   }
 
-  const hubs = view?.stats.hubs ?? []
+  const hubs = view.stats.hubs ?? []
 
   return (
     <div className="relative h-full w-full">
       <canvas
         ref={canvasRef}
-        className="h-full w-full cursor-crosshair rounded-lg bg-zinc-950"
+        className="h-full w-full cursor-crosshair rounded-xl bg-black/50"
         onMouseMove={(event) => {
           const body = pick(event)
           hoverRef.current = body
@@ -492,28 +573,38 @@ export function AgentGraph({
         }}
       />
 
+      {!view.nodes.length && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-[rgb(var(--muted))]">
+          No agent traffic yet — launch a swarm to see the live mesh.
+        </div>
+      )}
+
       {/* controls */}
-      <div className="absolute left-2 top-2 flex flex-wrap items-center gap-2 text-[11px]">
-        {[
-          [0, "all"],
-          [60, "1m"],
-          [300, "5m"],
-          [900, "15m"],
-        ].map(([value, label]) => (
+      <div className="absolute left-2 top-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+        {(
+          [
+            [0, "all"],
+            [60, "1m"],
+            [300, "5m"],
+            [900, "15m"],
+          ] as const
+        ).map(([value, label]) => (
           <button
-            key={label as string}
-            onClick={() => setWindowSeconds(value as number)}
-            className={`rounded px-2 py-0.5 ${
-              windowSeconds === value ? "bg-white text-black" : "bg-zinc-800/80 text-zinc-400"
+            key={label}
+            onClick={() => setWindowSeconds(value)}
+            className={`rounded-lg border px-2 py-0.5 ${
+              windowSeconds === value ? "bg-white text-black" : "bg-black/50 text-[rgb(var(--muted))]"
             }`}
           >
-            {label as string}
+            {label}
           </button>
         ))}
         <button
           onClick={() => setShowBroadcasts((previous) => !previous)}
-          className={`rounded px-2 py-0.5 ${
-            showBroadcasts ? "bg-indigo-500/80 text-white" : "bg-zinc-800/80 text-zinc-400"
+          className={`rounded-lg border px-2 py-0.5 ${
+            showBroadcasts
+              ? "bg-[rgb(var(--accent))]/70 text-white"
+              : "bg-black/50 text-[rgb(var(--muted))]"
           }`}
         >
           broadcasts
@@ -525,7 +616,10 @@ export function AgentGraph({
         {Object.entries(KIND_COLOR)
           .slice(0, 7)
           .map(([kind, color]) => (
-            <span key={kind} className="flex items-center gap-1 rounded bg-zinc-900/80 px-1.5 py-0.5">
+            <span
+              key={kind}
+              className="flex items-center gap-1 rounded-lg border bg-black/60 px-1.5 py-0.5"
+            >
               <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
               {kind}
             </span>
@@ -533,12 +627,12 @@ export function AgentGraph({
       </div>
 
       {/* stats + hubs */}
-      <div className="absolute bottom-2 left-2 rounded-lg bg-zinc-900/85 px-3 py-2 text-[11px] text-zinc-400">
+      <div className="absolute bottom-2 left-2 rounded-xl border bg-black/70 px-3 py-2 text-[11px] text-[rgb(var(--muted))]">
         <div>
-          {view?.stats.node_count ?? 0} nodes · {view?.stats.edge_count ?? 0} links ·{" "}
-          {view?.stats.message_count ?? 0} msgs
-          {graph && graph.nodes.length > CLUSTER_LIMIT && (
-            <span className="ml-2 text-amber-400">clustered by team</span>
+          {view.stats.node_count} nodes · {view.stats.edge_count} links ·{" "}
+          {view.stats.message_count} msgs
+          {graph.nodes.length > CLUSTER_LIMIT && (
+            <span className="ml-2 text-[rgb(var(--warn))]">clustered by team</span>
           )}
         </div>
         {hubs.length > 0 && (
@@ -550,18 +644,16 @@ export function AgentGraph({
 
       {/* hover card */}
       {hover && (
-        <div className="pointer-events-none absolute bottom-2 right-2 w-64 rounded-lg border border-zinc-700 bg-zinc-900/95 p-3 text-xs">
-          <div className="font-semibold text-zinc-100">{hover.label}</div>
-          <div className="text-zinc-500">
+        <div className="pointer-events-none absolute bottom-2 right-2 w-64 rounded-xl border bg-black/90 p-3 text-xs">
+          <div className="font-semibold">{hover.label}</div>
+          <div className="text-[rgb(var(--muted))]">
             {hover.role} · {hover.team} · {hover.status}
           </div>
-          <div className="mt-1 text-zinc-400">
+          <div className="mt-1 text-[rgb(var(--muted))]">
             sent {hover.sent} · received {hover.received}
             {hover.steps ? ` · ${hover.steps} steps` : ""}
           </div>
-          {hover.current_action && (
-            <div className="mt-1 line-clamp-3 text-zinc-300">{hover.current_action}</div>
-          )}
+          {hover.current_action && <div className="mt-1 line-clamp-3">{hover.current_action}</div>}
         </div>
       )}
     </div>
