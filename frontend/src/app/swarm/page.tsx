@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { AgentGraph } from "@/components/swarm/AgentGraph"
 import { AgentGrid } from "@/components/swarm/AgentGrid"
 import { BlackboardPanel } from "@/components/swarm/BlackboardPanel"
 import { ConversationFeed } from "@/components/swarm/ConversationFeed"
@@ -27,6 +28,8 @@ const KINDS = [
   "status",
 ]
 
+type View = "graph" | "feed" | "split"
+
 export default function SwarmDashboard() {
   const sessionId = useStore((state) => state.sessionId)
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -36,6 +39,7 @@ export default function SwarmDashboard() {
   const [model, setModel] = useState("")
   const [selected, setSelected] = useState<string | null>(null)
   const [kind, setKind] = useState<string | null>(null)
+  const [view, setView] = useState<View>("split")
   const [busy, setBusy] = useState(false)
 
   const refresh = useCallback(async () => {
@@ -78,6 +82,63 @@ export default function SwarmDashboard() {
       setBusy(false)
     }
   }
+
+  const graphPanel = (
+    <div className="flex min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="text-sm font-semibold">Communication graph</h2>
+        <span className="text-[11px] text-zinc-500">who is talking to whom — live</span>
+        {selected && (
+          <button
+            onClick={() => setSelected(null)}
+            className="ml-auto rounded bg-zinc-800 px-2 py-0.5 text-[11px]"
+          >
+            clear focus ×
+          </button>
+        )}
+      </div>
+      <div className="min-h-[260px] flex-1">
+        <AgentGraph
+          sessionId={sessionId}
+          live={live}
+          selected={selected}
+          onSelect={setSelected}
+        />
+      </div>
+    </div>
+  )
+
+  const feedPanel = (
+    <div className="flex min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold">Live conversation</h2>
+        {selected && (
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs">
+            {selected}
+            <button className="ml-2 text-zinc-500" onClick={() => setSelected(null)}>
+              ×
+            </button>
+          </span>
+        )}
+        <div className="ml-auto flex flex-wrap gap-1">
+          {KINDS.map((item) => (
+            <button
+              key={item}
+              onClick={() => setKind(kind === item ? null : item)}
+              className={`rounded px-2 py-0.5 text-[10px] uppercase ${
+                kind === item ? "bg-white text-black" : "bg-zinc-800 text-zinc-400"
+              }`}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1">
+        <ConversationFeed messages={messages} filterAgent={selected} filterKind={kind} />
+      </div>
+    </div>
+  )
 
   return (
     <main className="flex h-screen flex-col gap-3 bg-zinc-950 p-4 text-zinc-100">
@@ -128,6 +189,25 @@ export default function SwarmDashboard() {
         >
           Force debate
         </button>
+        <div className="flex overflow-hidden rounded-lg border border-zinc-800">
+          {(
+            [
+              ["split", "Split"],
+              ["graph", "Graph"],
+              ["feed", "Feed"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => setView(value)}
+              className={`px-3 py-2 text-xs ${
+                view === value ? "bg-white text-black" : "bg-zinc-950 text-zinc-400"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </header>
 
       {/* Stats */}
@@ -148,40 +228,21 @@ export default function SwarmDashboard() {
       </section>
 
       {/* Main grid */}
-      <section className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[320px_1fr_320px]">
+      <section className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[300px_1fr_320px]">
         <div className="min-h-0 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
           <h2 className="mb-2 text-sm font-semibold">Agent mesh</h2>
           <AgentGrid agents={snapshot?.agents ?? []} onSelect={setSelected} selected={selected} />
         </div>
 
-        <div className="flex min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold">Live conversation</h2>
-            {selected && (
-              <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs">
-                {selected}
-                <button className="ml-2 text-zinc-500" onClick={() => setSelected(null)}>
-                  ×
-                </button>
-              </span>
-            )}
-            <div className="ml-auto flex flex-wrap gap-1">
-              {KINDS.map((item) => (
-                <button
-                  key={item}
-                  onClick={() => setKind(kind === item ? null : item)}
-                  className={`rounded px-2 py-0.5 text-[10px] uppercase ${
-                    kind === item ? "bg-white text-black" : "bg-zinc-800 text-zinc-400"
-                  }`}
-                >
-                  {item}
-                </button>
-              ))}
+        <div className="grid min-h-0 grid-rows-1 gap-3">
+          {view === "graph" && graphPanel}
+          {view === "feed" && feedPanel}
+          {view === "split" && (
+            <div className="grid min-h-0 grid-rows-2 gap-3">
+              {graphPanel}
+              {feedPanel}
             </div>
-          </div>
-          <div className="min-h-0 flex-1">
-            <ConversationFeed messages={messages} filterAgent={selected} filterKind={kind} />
-          </div>
+          )}
         </div>
 
         <div className="flex min-h-0 flex-col gap-3">
