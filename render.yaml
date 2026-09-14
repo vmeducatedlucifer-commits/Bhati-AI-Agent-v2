@@ -1,9 +1,15 @@
-# Render blueprint — one-click deploy for API + dashboard + managed Postgres.
+# Render blueprint - FREE TIER (no disk, no paid plans).
+#
+# Free tier notes:
+#  - Free web services have NO persistent disk -> workspace is ephemeral (/tmp/workspaces)
+#  - Free services sleep after ~15 min idle and cold-start in ~30-60s
+#  - Free Postgres keeps sessions/messages/runs safe across restarts
+#  - Use paid plans + a disk only if you need long-lived workspaces (see render.paid.yaml)
 services:
   - type: web
     name: bhati-api
     runtime: docker
-    plan: starter
+    plan: free
     rootDir: backend
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
@@ -11,10 +17,21 @@ services:
     envVars:
       - key: APP_ENV
         value: production
+      # Free tier cannot run Docker-in-Docker -> use the in-process sandbox
       - key: SANDBOX_MODE
         value: local
+      # Ephemeral, but /tmp is always writable on free instances
       - key: WORKSPACE_DIR
-        value: /app/workspaces
+        value: /tmp/workspaces
+      - key: EPHEMERAL_WORKSPACE
+        value: "true"
+      # Keep memory/CPU inside the 512 MB free limit
+      - key: MAX_PARALLEL_AGENTS
+        value: "2"
+      - key: MAX_STEPS
+        value: "25"
+      - key: WEB_CONCURRENCY
+        value: "1"
       - key: AUTH_ENABLED
         value: "true"
       - key: JWT_SECRET
@@ -23,6 +40,9 @@ services:
         fromDatabase:
           name: bhati-db
           property: connectionString
+      - key: CORS_ORIGINS
+        value: "*"
+      # Add your keys in the Render dashboard (sync:false = secret, set manually)
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
@@ -31,34 +51,32 @@ services:
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: GITHUB_TOKEN
         sync: false
       - key: TAVILY_API_KEY
         sync: false
-      - key: CORS_ORIGINS
-        value: "*"
-    disk:
-      name: workspaces
-      mountPath: /app/workspaces
-      sizeGB: 10
 
   - type: web
     name: bhati-web
     runtime: node
-    plan: starter
+    plan: free
     rootDir: frontend
-    buildCommand: npm ci && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm run start
     autoDeploy: true
     envVars:
+      - key: NODE_VERSION
+        value: "20"
       - key: NEXT_PUBLIC_API_URL
         fromService:
           type: web
           name: bhati-api
-          property: host
+          envVarKey: RENDER_EXTERNAL_URL
 
 databases:
   - name: bhati-db
-    plan: basic-256mb
+    plan: free
     databaseName: bhati
     user: bhati
