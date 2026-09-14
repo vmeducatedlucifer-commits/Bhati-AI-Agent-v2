@@ -1,5 +1,7 @@
 "use client"
 
+import Link from "next/link"
+import { usePathname } from "next/navigation"
 import { useEffect, useState } from "react"
 import { getJSON } from "@/lib/api"
 import { useStore } from "@/lib/store"
@@ -14,14 +16,26 @@ type Info = {
 
 const PROFILES = ["general", "coder", "researcher", "operator", "reviewer"]
 
+const NAV = [
+  { href: "/", label: "Chat", icon: "\u{1F4AC}" },
+  { href: "/swarm", label: "Swarm", icon: "\u{1F41D}" },
+  { href: "/tasks", label: "Tasks", icon: "\u{1F4CB}" },
+  { href: "/models", label: "Models", icon: "\u{1F9E0}" },
+]
+
 export default function Sidebar() {
   const [info, setInfo] = useState<Info | null>(null)
+  const [swarm, setSwarm] = useState<{ max_agents: number } | null>(null)
+  const pathname = usePathname()
   const { profile, setProfile, mode, setMode, sessionId, reset, agents } = useStore()
 
   useEffect(() => {
     getJSON<Info>("/api/info")
       .then(setInfo)
       .catch(() => setInfo(null))
+    getJSON<{ max_agents: number }>("/api/swarm/config")
+      .then(setSwarm)
+      .catch(() => setSwarm(null))
   }, [])
 
   return (
@@ -30,6 +44,23 @@ export default function Sidebar() {
         <h1 className="text-lg font-semibold text-accent">Bhati AI v2</h1>
         <p className="text-xs text-slate-500">autonomous agent platform</p>
       </div>
+
+      <nav className="space-y-1">
+        {NAV.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition ${
+              pathname === item.href
+                ? "bg-ink text-accent"
+                : "text-slate-400 hover:bg-ink hover:text-slate-200"
+            }`}
+          >
+            <span>{item.icon}</span>
+            {item.label}
+          </Link>
+        ))}
+      </nav>
 
       <div className="space-y-2">
         <p className="chip">mode</p>
@@ -82,6 +113,7 @@ export default function Sidebar() {
             <p className="truncate">providers: {info.providers.join(", ") || "none"}</p>
           </>
         )}
+        {swarm && <p>swarm cap: {swarm.max_agents} agents</p>}
         <button onClick={reset} className="btn mt-2 w-full">
           New session
         </button>
