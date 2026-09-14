@@ -92,6 +92,41 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value: object) -> object:
+        """Make managed Postgres URLs usable by SQLAlchemy's async engine.
+
+        Render/Heroku/Railway hand out `postgres://` or `postgresql://` URLs that
+        point at the *sync* psycopg driver. Booting an async engine with those
+        crashes at startup, which is the classic "deploy succeeds, service dies"
+        failure. Normalise them to asyncpg and drop libpq-only query args that
+        asyncpg rejects (e.g. `sslmode`).
+        """
+        if not isinstance(value, str) or not value.strip():
+            return value
+        url = value.strip()
+
+        if url.startswith("postgres://"):
+            url = "postgresql+asyncpg://" + url[len("postgres://") :]
+        elif url.startswith("postgresql://"):
+            url = "postgresql+asyncpg://" + url[len("postgresql://") :]
+        elif url.startswith("postgresql+psycopg2://"):
+            url = "postgresql+asyncpg://" + url[len("postgresql+psycopg2://") :]
+        elif url.startswith("sqlite://") and "+aiosqlite" not in url:
+            url = "sqlite+aiosqlite://" + url[len("sqlite://") :]
+
+        if url.startswith("postgresql+asyncpg://") and "?" in url:
+            base, _, query = url.partition("?")
+            kept = [
+                part
+                for part in query.split("&")
+                if part and not part.startswith(("sslmode=", "channel_binding=", "gssencmode="))
+            ]
+            url = base + ("?" + "&".join(kept) if kept else "")
+
+        return url
+
     @field_validator("swarm_max_agents")
     @classmethod
     def _cap_agents(cls, value: int) -> int:
@@ -102,10 +137,25 @@ class Settings(BaseSettings):
         return self.app_env.lower() in {"production", "prod"}
 
     @property
+    def is_postgres(self) -> bool:
+        return self.database_url.startswith("postgresql")
+
+    @property
     def workspace_path(self) -> Path:
-        path = Path(self.workspace_dir).resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        """Workspace root, falling back to /tmp when the disk is read-only.
+
+        Render free instances have no persistent disk, so a relative path like
+        `./workspaces` can fail on a read-only filesystem. Never crash on boot
+        because of it.
+        """
+        try:
+            path = Path(self.workspace_dir).resolve()
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except OSError:
+            fallback = Path("/tmp/workspaces")
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
 
     def configured_providers(self) -> list[str]:
         mapping = {

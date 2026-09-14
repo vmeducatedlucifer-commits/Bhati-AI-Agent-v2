@@ -5,13 +5,21 @@
 #  - Free services sleep after ~15 min idle and cold-start in ~30-60s
 #  - Free Postgres keeps sessions/messages/runs safe across restarts
 #  - Use paid plans + a disk only if you need long-lived workspaces (see render.paid.yaml)
+#
+# After the blueprint creates the services:
+#  1. bhati-api -> Environment -> add at least one model key (OPENAI_API_KEY / ANTHROPIC_API_KEY / ...)
+#  2. bhati-web -> Environment -> set NEXT_PUBLIC_API_URL to the API URL, e.g.
+#       https://bhati-api.onrender.com      (no trailing slash)
+#     then Clear build cache & deploy, because Next.js inlines NEXT_PUBLIC_* at build time.
 services:
   - type: web
     name: bhati-api
     runtime: docker
     plan: free
+    region: oregon
     rootDir: backend
     dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
@@ -32,8 +40,16 @@ services:
         value: "25"
       - key: WEB_CONCURRENCY
         value: "1"
+      # Swarm caps tuned for 512 MB / shared CPU
+      - key: SWARM_MAX_AGENTS
+        value: "50"
+      - key: SWARM_LLM_CONCURRENCY
+        value: "4"
+      - key: SWARM_DEFAULT_AGENTS
+        value: "6"
+      # Turn auth on only after you create a user; keeps the first deploy usable
       - key: AUTH_ENABLED
-        value: "true"
+        value: "false"
       - key: JWT_SECRET
         generateValue: true
       - key: DATABASE_URL
@@ -62,18 +78,18 @@ services:
     name: bhati-web
     runtime: node
     plan: free
+    region: oregon
     rootDir: frontend
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --legacy-peer-deps && npm run build
     startCommand: npm run start
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
         value: "20"
+      # Set this manually to https://bhati-api.onrender.com after the API deploys.
+      # (fromService/RENDER_EXTERNAL_URL cannot be referenced in a blueprint.)
       - key: NEXT_PUBLIC_API_URL
-        fromService:
-          type: web
-          name: bhati-api
-          envVarKey: RENDER_EXTERNAL_URL
+        sync: false
 
 databases:
   - name: bhati-db
