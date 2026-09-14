@@ -23,6 +23,7 @@ from app.api.routes import (
     terminal,
     tools,
     voice,
+    workspace,
 )
 from app.core.config import settings
 from app.core.errors import BhatiError
@@ -57,10 +58,10 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Bhati AI Agent v2",
-    version="2.1.0",
+    version="2.2.0",
     description=(
         "Autonomous multi-agent platform: swarm coordination (up to 1200 agents), "
-        "coding, computer use, research and device control."
+        "per-agent workspaces, coding, computer use, research and device control."
     ),
     lifespan=lifespan,
 )
@@ -80,6 +81,7 @@ for module in (
     sessions,
     tools,
     files,
+    workspace,
     terminal,
     events,
     voice,
@@ -103,6 +105,7 @@ async def root() -> dict:
         "docs": "/docs",
         "health": "/api/health",
         "swarm": "/api/swarm/config",
+        "workspace": "/api/workspace",
         "tasks": "/api/tasks",
     }
 

@@ -14,6 +14,7 @@ from app.api.routes import (
     terminal,
     tools,
     voice,
+    workspace,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "terminal",
     "tools",
     "voice",
+    "workspace",
 ]
